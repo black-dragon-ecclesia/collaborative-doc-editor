@@ -11,7 +11,15 @@ const routes = [
         name: 'Home',
         component: () => import('../views/Home.vue'),
         meta: { requireAuth: true } // 需要登录才能访问
+    },
+    {
+        // 文档编辑页
+        path: '/editor/:docId',
+        name: 'Editor',
+        component: () => import('../views/Editor.vue'),
+        meta: { requireAuth: true }
     }
+
 ]
 
 const router = createRouter({

@@ -3,6 +3,7 @@ const cors = require('cors')
 const pool = require('./db/config')
 const userRouter = require('./router/user')
 const folderRouter = require('./router/folder')
+const docRouter = require('./router/document')
 const authMiddleware = require('./middleware/auth')
 
 const app = express()
@@ -34,6 +35,7 @@ app.get('/api/profile', authMiddleware, (req, res) => {
 
 app.use('/api/user', userRouter) //用户登录注册相关接口
 app.use('/api/folder', authMiddleware, folderRouter) //文件夹相关接口
+app.use('/api/document', authMiddleware, docRouter) //文档相关接口
 
 app.listen(PORT, () => {
     console.log(`后端服务启动，端口：${PORT}`)
