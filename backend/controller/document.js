@@ -73,3 +73,42 @@ exports.deleteDoc = async (req, res) => {
         return res.json({ code: 500, msg: '删除文档失败' })
     }
 }
+
+// 根据id获取文档详情（内容）
+exports.getDocDetail = async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { id } = req.params
+        const [rows] = await pool.query(
+            'SELECT * FROM document WHERE id = ? AND user_id = ? AND status = 1',
+            [id, userId]
+        )
+        if (rows.length === 0) {
+            return res.json({ code: 400, msg: '文档不存在或者无权访问' })
+        }
+        return res.json({ code: 200, data: rows[0] })
+    } catch (err) {
+        console.error(err)
+        return res.json({ code: 500, msg: '获取文档详情失败' })
+    }
+}
+
+// 保存文档内容
+exports.saveDocContent = async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { id, content } = req.body
+        const [result] = await pool.query(
+            'UPDATE document SET content = ? WHERE id = ? AND user_id = ? AND status =1',
+            [content, id, userId]
+        )
+        if (result.affectedRows === 0) {
+            return res.json({ code: 400, msg: '文档不存在或者无权修改' })
+        }
+        return res.json({ code: 200, msg: '保存成功' })
+    } catch (err) {
+        console.error(err)
+        return res.json({ code: 500, msg: '保存失败' })
+    }
+}
+
