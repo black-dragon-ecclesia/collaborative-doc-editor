@@ -13,6 +13,12 @@ const routes = [
         meta: { requireAuth: true } // 需要登录才能访问
     },
     {
+        // 分享访问页，访客无需登录
+        path: '/share/:code',
+        name: 'Share',
+        component: () => import('../views/Share.vue')
+    },
+    {
         // 文档编辑页
         path: '/editor/:docId',
         name: 'Editor',
