@@ -16,9 +16,18 @@
           {{ permission === 2 ? '可编辑' : '只读' }}
         </el-tag>
 
+        <!-- 当前视图类型，由文件名后缀决定 -->
+        <el-tag type="info" size="small">{{ docView.label }}</el-tag>
+
         <!-- 当前身份，访客可点改名，让在线列表里始终是可辨识的真人名字 -->
         <span class="identity">身份：{{ displayName }}</span>
         <el-button v-if="isGuest" link size="small" @click="renameGuest">改名</el-button>
+
+        <!-- 只有 Markdown 才给编辑 / 预览切换 -->
+        <el-radio-group v-if="docView.view === 'markdown'" v-model="mdMode" size="small">
+          <el-radio-button value="edit">编辑</el-radio-button>
+          <el-radio-button value="preview">预览</el-radio-button>
+        </el-radio-group>
 
         <!-- 只有可编辑权限才显示保存按钮 -->
         <el-button v-if="permission === 2" type="primary" size="small" @click="handleSave">保存</el-button>
@@ -35,8 +44,30 @@
         <span v-for="u in onlineUsers" :key="u.userId">{{ u.username }}</span>
       </div>
 
-      <!-- 只读权限下禁用编辑，可编辑权限下可正常输入 -->
-      <MonacoEditor v-model="content" :read-only="permission !== 2" />
+      <div v-if="docView.view === 'table' && csvError" class="type-tip">
+        无法以表格视图显示：{{ csvError }}。当前按纯文本显示。
+      </div>
+
+      <CsvTable
+        v-if="docView.view === 'table' && !csvError"
+        v-model="content"
+        :read-only="permission !== 2"
+      />
+
+      <div
+        v-else-if="docView.view === 'markdown' && mdMode === 'preview'"
+        class="md-preview"
+        v-html="mdHtml"
+      ></div>
+
+      <MonacoEditor
+        v-else
+        v-model="content"
+        :language="docView.language"
+        :read-only="permission !== 2"
+      />
+
+    
     </div>
 
     <!-- 昵称弹窗：未登录访客进入前必须设置，不允许点击遮罩关闭 -->
@@ -69,7 +100,13 @@ import request from '../utils/request'
 import MonacoEditor from '../components/MonacoEditor.vue'
 import { io } from 'socket.io-client'
 // 需要与 Editor.vue 使用同一套差分协议，否则两端收发不匹配
-import { diffToOp, applyOp } from '../utils/ot'
+import { diffToOp, applyOp,transform } from '../utils/ot'
+import { resolveDocView ,parseExt} from '../utils/docType'
+import { marked } from 'marked'
+//import { computed } from 'vue'
+import CsvTable from '../components/CsvTable.vue'
+import { validateCsv } from '../utils/csv'
+
 
 
 const route = useRoute()
@@ -112,6 +149,24 @@ const displayName = computed(() => {
   if (username) return username
   return guestName.value || '未设置'
 })
+
+// ===== 文档视图类型（分享页只拿得到 name，所以同样按后缀推导）=====
+const docView = computed(() => resolveDocView({ name: docName.value }))
+// Markdown 的编辑/预览切换；只读访客也能切预览
+const mdMode = ref('edit')
+// Markdown 渲染结果
+const mdHtml = computed(() => {
+  if (docView.value.view !== 'markdown') return ''
+  return marked.parse(content.value || '')
+})
+
+const csvCheck = computed(() => {
+  if (docView.value.view !== 'table') return { ok: true }
+  return validateCsv(content.value)
+})
+const csvError = computed(() => (csvCheck.value.ok ? '' : csvCheck.value.error))
+
+
 
 // 通过分享码拉取文档基础信息与权限
 async function loadShareDoc() {
@@ -350,4 +405,22 @@ loadShareDoc()
   text-align: center;
   color: #666;
 }
+/* Markdown 预览区：访客只读，白底留白可滚动 */
+.md-preview {
+  min-height: 500px;
+  padding: 20px 24px;
+  background: #fff;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+  overflow: auto;
+  line-height: 1.7;
+}
+
+/* 表格类型未接入前的提示条 */
+.type-tip {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #e6a23c;
+}
+
 </style>

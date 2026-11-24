@@ -9,6 +9,14 @@
       <el-button size="small" @click="openSnapshotSave">保存快照</el-button>
       <!-- 历史版本入口 -->
       <el-button size="small" @click="openSnapshotList">历史版本</el-button>
+      <!-- CSV 视图互转：仅表格类型出现，只切换本端渲染，不改类型与内容 -->
+      <el-button
+        v-if="docView.view === 'table'"
+        size="small"
+        @click="csvViewMode = csvViewMode === 'grid' ? 'text' : 'grid'"
+      >
+        切换为{{ csvViewMode === 'grid' ? '文本' : '表格' }}视图
+      </el-button>
       <div class="online-list">
         <span>在线：</span>
         <span v-for="u in onlineUsers" :key="u.userId">{{ u.username }}</span>
@@ -17,8 +25,37 @@
     </div>
     <div class="title">
       <h2>{{ docInfo.name || '未命名文档' }}</h2>
+      <!-- 当前视图类型，纯展示，不可手动切换 -->
+      <span class="type-tag">{{ docView.label }}</span>
+      <!-- 只有 Markdown 才给编辑 / 预览切换 -->
+      <el-radio-group v-if="docView.view === 'markdown'" v-model="mdMode" size="small" class="md-switch">
+        <el-radio-button value="edit">编辑</el-radio-button>
+        <el-radio-button value="preview">预览</el-radio-button>
+      </el-radio-group>
     </div>
-    <MonacoEditor v-model="docContent" />
+    
+    <!-- 表格类型但内容不合法：独立提示条，不参与下面的渲染链 -->
+    <div v-if="docView.view === 'table' && csvError" class="type-tip">
+      无法以表格视图显示：{{ csvError }}。当前按纯文本显示。
+    </div>
+
+    <!-- 链的起点：表格且校验通过才挂网格 -->
+    <CsvTable
+      v-if="showGrid"
+      v-model="docContent"
+    />
+
+    <!-- Markdown 预览态 -->
+    <div
+      v-else-if="docView.view === 'markdown' && mdMode === 'preview'"
+      class="md-preview"
+      v-html="mdHtml"
+    ></div>
+
+    <!-- 兜底：普通文本、代码、以及"表格但校验不通过"都走 Monaco -->
+    <MonacoEditor v-else v-model="docContent" :language="docView.language" />
+
+
   </div>
   <!-- 分享弹窗：选权限、填有效期、生成链接 -->
   <el-dialog v-model="showShare" title="分享文档" width="520px">
@@ -48,13 +85,13 @@
     </template>
   </el-dialog>
     <!-- 保存快照弹窗 -->
-    <el-dialog v-model="showSnapshotSave" title="保存版本快照" width="420px">
+  <el-dialog v-model="showSnapshotSave" title="保存版本快照" width="420px">
       <el-input v-model="snapshotRemark" placeholder="版本备注，例如：完成第一章" />
       <template #footer>
         <el-button @click="showSnapshotSave = false">取消</el-button>
         <el-button type="primary" @click="saveSnapshot">保存</el-button>
       </template>
-    </el-dialog>
+  </el-dialog>
 
     <!-- 历史版本弹窗：列表 + 预览 + 回滚 -->
     <el-dialog v-model="showSnapshotList" title="历史版本" width="720px">
@@ -87,6 +124,15 @@ import { io } from 'socket.io-client'
 import { useUserStore } from '../stores/user'
 // 操作差分与应用工具
 import { diffToOp, applyOp,transform } from '../utils/ot'
+// 文档类型解析工具
+import { resolveDocView ,parseExt} from '../utils/docType'
+import { computed } from 'vue'
+import { marked } from 'marked'
+// 表格组件
+import CsvTable from '../components/CsvTable.vue'
+import { validateCsv } from '../utils/csv'
+
+
 
 
 const userStore = useUserStore()
@@ -139,10 +185,13 @@ function getDraftKey(docId) {
 async function loadDoc(id) {
   const res = await request.get(`/document/${id}`)
   if(res.code === 200) {
+    console.log(res)
     docInfo.value = res.data
     docContent.value = res.data.content
     lastText = res.data.content||''
     saveTip.value = ''
+    // 切换到表格视图
+    csvViewMode.value = 'grid'
 
     // 读取本地草稿
     const localDraft = localStorage.getItem(getDraftKey(id))
@@ -333,6 +382,31 @@ async function rollbackSnapshot(row) {
     }
 }
 
+// ===== 文档视图类型相关状态 =====
+// 视图类型完全由文件名后缀决定，这里只是把映射结果算出来
+const docView = computed(() => resolveDocView(docInfo.value))
+// Markdown 的「编辑 / 预览」切换，只在 .md 时出现
+const mdMode = ref('edit')
+// Markdown 预览的渲染结果
+const mdHtml = computed(() => {
+  if (docView.value.view !== 'markdown') return ''
+  return marked.parse(docContent.value || '')
+})
+
+// 表格类型的内容校验：不通过就不挂网格，退回纯文本并提示原因
+const csvCheck = computed(() => {
+  if (docView.value.view !== 'table') return { ok: true }
+  return validateCsv(docContent.value)
+})
+// 校验失败的原因，用于提示条
+const csvError = computed(() => (csvCheck.value.ok ? '' : csvCheck.value.error))
+// 'grid' 表格视图 / 'text' 文本视图；切到别的文档时重置回 'grid'
+const csvViewMode = ref('grid')
+// 是否真的挂网格：类型是表格 + 内容合法 + 本端没切到文本
+const showGrid = computed(
+  () => docView.value.view === 'table' && !csvError.value && csvViewMode.value === 'grid'
+)
+
 
 
 // 防抖自动保存
@@ -446,6 +520,36 @@ onUnmounted(() => {
   white-space: pre-wrap;
   font-family: Consolas, monospace;
   font-size: 13px;
+}
+/* 类型标签：只做展示，告诉用户当前是什么视图 */
+.type-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  margin-left: 8px;
+  font-size: 12px;
+  color: #909399;
+  border: 1px solid #e4e7ed;
+  border-radius: 10px;
+}
+/* Markdown 编辑 / 预览切换按钮 */
+.md-switch {
+  margin-left: 12px;
+}
+/* Markdown 预览区：白底、留白、可滚动 */
+.md-preview {
+  min-height: 500px;
+  padding: 20px 24px;
+  background: #fff;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+  overflow: auto;
+  line-height: 1.7;
+}
+/* 表格类型未接入前的提示条 */
+.type-tip {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #e6a23c;
 }
 
 </style>

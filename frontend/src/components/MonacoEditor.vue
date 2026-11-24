@@ -69,6 +69,16 @@ watch(() => props.readOnly, (val) => {
   if (editorInstance) editorInstance.updateOptions({ readOnly: val })
 })
 
+// 切换文档类型（如 .txt 改成 .json）时，把新语言同步到已创建的模型
+// 注意：language 只在 create 时生效，后续变化必须用 setModelLanguage
+watch(() => props.language, (lang) => {
+  if (editorInstance) {
+    const model = editorInstance.getModel()
+    if (model) monaco.editor.setModelLanguage(model, lang || 'plaintext')
+  }
+})
+
+
 
 onMounted(() => {
   initEditor()
