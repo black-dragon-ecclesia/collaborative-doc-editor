@@ -24,6 +24,13 @@ const routes = [
         name: 'Editor',
         component: () => import('../views/Editor.vue'),
         meta: { requireAuth: true }
+    },
+    {
+        // 编辑统计页，需登录
+        path: '/stats',
+        name: 'Stats',
+        component: () => import('../views/Stats.vue'),
+        meta: { requireAuth: true }
     }
 
 ]

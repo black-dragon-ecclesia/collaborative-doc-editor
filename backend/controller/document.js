@@ -1,4 +1,5 @@
 const pool = require('../db/config')
+const { parseDocType } = require('../utils/docType') // 从文件名推导文档类型
 
 // 获取当前用户所有文档（status=1有效）
 exports.getDocList = async (req, res) => {
@@ -23,11 +24,12 @@ exports.createDoc = async (req, res) => {
         if (!name) {
             return res.json({ code: 400, msg: '文档名称不能为空' })
         }
+        const docType = parseDocType(name)
         await pool.query(
-            'INSERT INTO document(name, folder_id, user_id, content) VALUES (?,?,?,?)',
-            [name, folderId || null, userId, '']
+            'INSERT INTO document(name, folder_id, user_id, content, doc_type) VALUES (?,?,?,?,?)',
+            [name, folderId || null, userId, '', docType]
         )
-        return res.json({ code: 200, msg: '文档创建成功' })
+        return res.json({ code: 200, msg: '文档创建成功', data: { docType } })
     } catch (err) {
         console.error(err)
         return res.json({ code: 500, msg: '创建文档失败' })
@@ -41,14 +43,15 @@ exports.updateDocName = async (req, res) => {
         const { id, name } = req.body
         if (!id || !name) return res.json({ code: 400, msg: '参数不全' })
 
+        const docType = parseDocType(name)
         const [result] = await pool.query(
-            'UPDATE document SET name = ? WHERE id = ? AND user_id = ? AND status = 1',
-            [name, id, userId]
+            'UPDATE document SET name = ?, doc_type = ? WHERE id = ? AND user_id = ? AND status = 1',
+            [name, docType, id, userId]
         )
         if (result.affectedRows === 0) {
             return res.json({ code: 400, msg: '文档不存在或无权限' })
         }
-        return res.json({ code: 200, msg: '修改文档名称成功' })
+        return res.json({ code: 200, msg: '修改文档名称成功', data: { docType } })
     } catch (err) {
         console.error(err)
         return res.json({ code: 500, msg: '修改文档失败' })

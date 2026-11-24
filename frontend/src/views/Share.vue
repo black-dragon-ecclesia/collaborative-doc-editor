@@ -68,6 +68,9 @@ import { ElMessage } from 'element-plus'
 import request from '../utils/request'
 import MonacoEditor from '../components/MonacoEditor.vue'
 import { io } from 'socket.io-client'
+// 需要与 Editor.vue 使用同一套差分协议，否则两端收发不匹配
+import { diffToOp, applyOp } from '../utils/ot'
+
 
 const route = useRoute()
 
@@ -91,6 +94,15 @@ let currentDocId = null
 let isRemoteChange = false
 let debounceTimer = null
 
+// 本地最近一次已同步的全文，作为差分基准
+let lastText = ''
+
+// 本地缓存的未确认操作，用于回执确认
+let pendingOps = []
+// 本地操作自增序号，给每条操作一个唯一标识
+let opSeq = 0
+
+
 // 当前是否为未登录访客，控制改名按钮显示
 const isGuest = computed(() => !localStorage.getItem('userId'))
 
@@ -112,6 +124,8 @@ async function loadShareDoc() {
     }
     docName.value = res.data.name
     content.value = res.data.content
+    // 初始化差分基线，避免初次进入就被算成插入全文
+    lastText = res.data.content || ''
     permission.value = Number(res.data.permission)
     currentDocId = res.data.docId
     loading.value = false
@@ -186,7 +200,15 @@ function initSocket() {
   // 远端内容推送：只读访客也接收，靠标记阻止回广播
   socket.on('remoteOp', (op) => {
     isRemoteChange = true
-    content.value = op.content
+    let remoteOp = op
+    // 对本地缓存的操作进行 transform，合并到远端操作中
+    pendingOps.forEach(localOp => {
+      remoteOp = transform(localOp,remoteOp)
+    })
+    // 应用远端操作到本地文本，得到最新文本
+    const next = applyOp(content.value, remoteOp)
+    lastText = next
+    content.value = next //op.content
     setTimeout(() => { isRemoteChange = false }, 0)
   })
 
@@ -198,17 +220,35 @@ function initSocket() {
     onlineUsers.value = Array.from(seen.values())
   })
 
+  socket.on('opAck', ({opId}) => {
+    console.log("收到确认操作:",opId)
+    // 从本地缓存中移除已确认的操作
+    pendingOps = pendingOps.filter(op => op.opId !== opId)
+  })
+
   socket.emit('joinDoc', { docId: currentDocId, ...getGuestInfo() })
 }
 
 // 内容变化：可编辑才广播，只读访客不发送任何操作
-watch(content, () => {
+watch(content, (val) => {
   if (isRemoteChange) return
   if (!socket || permission.value !== 2) return
 
+  // 计算本次变化的差分操作
+  const op = diffToOp(lastText, val)
+  // 无论是否产生操作，基线都要跟随当前内容
+  lastText = val
+  // 没有变更操作，不发送
+  
+  if (!op) return
+
+  // 生成唯一 opId 并压入队列，等回执后才移除
+  const opId = ++opSeq
+  pendingOps.push({ opId, op })
   socket.emit('sendOp', {
     docId: currentDocId,
-    op: { content: content.value }
+    op,
+    opId
   })
 
   // 防抖自动保存，避免每次按键都写库
@@ -239,8 +279,11 @@ function handleExit() {
     if (currentDocId) socket.emit('leaveDoc', currentDocId)
     socket.off('remoteOp')
     socket.off('userList')
+    socket.off('opAck')
     socket.disconnect()
     socket = null
+    pendingOps = []
+    opSeq = 0
   }
   window.location.href = '/'
 }
@@ -252,8 +295,11 @@ onUnmounted(() => {
     if (currentDocId) socket.emit('leaveDoc', currentDocId)
     socket.off('remoteOp')
     socket.off('userList')
+    socket.off('opAck')
     socket.disconnect()
     socket = null
+    pendingOps = []
+    opSeq = 0
   }
 })
 

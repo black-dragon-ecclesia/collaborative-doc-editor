@@ -6,6 +6,8 @@ const folderRouter = require('./router/folder')
 const docRouter = require('./router/document')
 const shareRouter = require('./router/share')
 const snapshotRouter = require('./router/snapshot')
+const statsRouter = require('./router/stats')
+const statsCtrl = require('./controller/stats')    // 给 sendOp 埋点用
 const authMiddleware = require('./middleware/auth')
 const { Server } = require("socket.io")
 
@@ -42,6 +44,7 @@ app.use('/api/folder', authMiddleware, folderRouter) //文件夹相关接口
 app.use('/api/document', authMiddleware, docRouter) //文档相关接口
 app.use('/api/share', shareRouter) //分享相关接口
 app.use('/api/snapshot', authMiddleware, snapshotRouter) //快照相关接口
+app.use('/api/stats', authMiddleware, statsRouter) //统计汇总相关接口
 
 const server = app.listen(PORT, () => {
     console.log('服务启动在 8888')
@@ -113,6 +116,13 @@ io.on('connection', (socket) => {
         if (!data || !data.docId) return
         socket.emit('opAck', { opId: data.opId }) // 给自己回个ack，前端可用来清除本地缓存的未确认操作
         socket.to(String(data.docId)).emit('remoteOp', data.op)
+
+        // 埋点：有插入记 insert，纯删除记 delete；没登录身份的人不记，避免脏数据
+        const insLen = data.op && data.op.ins ? data.op.ins.length : 0
+        const hasDel = data.op && data.op.del > 0
+        if (socket.userId && (insLen > 0 || hasDel)) {
+            statsCtrl.logEditOp(Number(data.docId), socket.userId, insLen > 0 ? 'insert' : 'delete')
+        }
     })
 
     // 离开房间

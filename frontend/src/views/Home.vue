@@ -2,6 +2,7 @@
   <div class="home-container">
     <div class="header">
       <span>欢迎：{{ userStore.username }}</span>
+      <el-button @click="router.push('/stats')" type="primary" size="small" style="margin-right:8px;">编辑统计</el-button>
       <el-button @click="logout" type="danger" size="small">退出登录</el-button>
     </div>
 
