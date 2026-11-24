@@ -5,6 +5,7 @@ const userRouter = require('./router/user')
 const folderRouter = require('./router/folder')
 const docRouter = require('./router/document')
 const shareRouter = require('./router/share')
+const snapshotRouter = require('./router/snapshot')
 const authMiddleware = require('./middleware/auth')
 const { Server } = require("socket.io")
 
@@ -40,6 +41,7 @@ app.use('/api/user', userRouter) //用户登录注册相关接口
 app.use('/api/folder', authMiddleware, folderRouter) //文件夹相关接口
 app.use('/api/document', authMiddleware, docRouter) //文档相关接口
 app.use('/api/share', shareRouter) //分享相关接口
+app.use('/api/snapshot', authMiddleware, snapshotRouter) //快照相关接口
 
 const server = app.listen(PORT, () => {
     console.log('服务启动在 8888')
@@ -109,6 +111,7 @@ io.on('connection', (socket) => {
     // 接收编辑操作，向同房间内其他客户端广播操作
     socket.on('sendOp', (data) => {
         if (!data || !data.docId) return
+        socket.emit('opAck', { opId: data.opId }) // 给自己回个ack，前端可用来清除本地缓存的未确认操作
         socket.to(String(data.docId)).emit('remoteOp', data.op)
     })
 
