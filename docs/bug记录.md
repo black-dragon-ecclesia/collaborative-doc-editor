@@ -161,3 +161,133 @@ TypeError: Cannot read properties of undefined (reading 'userId')
 **4. 错误原因分析**
 
 Express 中间件是按挂载顺序串行执行的，未挂鉴权中间件时请求直接进路由，`req.user` 从未被赋值。这类问题不会在启动时报错，只在运行时第一次调用接口时暴露。修复为 `app.use('/api/snapshot', authMiddleware, snapshotRouter)`。
+
+---
+
+## Bug 8：模板调用 `parseExt` 未导入，整页退化为空白编辑器
+
+**1. 错误现象**
+
+打开任意文档，页面标题变成「未命名文档」，类型标签显示「纯文本」，编辑器只剩第 1 行空内容，顶栏在线列表也空了。控制台连续报错：
+
+```
+[Vue warn]: Property "parseExt" was accessed during render but is not defined on instance.
+Editor.vue:30 Uncaught (in promise) TypeError: _ctx.parseExt is not a function
+```
+
+**2. 错误描述**
+
+`Editor.vue` 的 `<script setup>` 里只写了 `import { resolveDocView } from '../utils/docType'`，模板里却在调 `parseExt(...)`。
+
+**3. 排错过程**
+
+- 先怀疑后端：用伪造 JWT（`{userId:2, username:'asdf'}` + 项目 secret）直接请求 `GET /api/document/12`，返回 HTTP 200，`name`、`doc_type` 均正确，排除接口与鉴权问题；
+- 回看浏览器控制台，`TypeError: _ctx.parseExt is not a function` 指向渲染函数第 30 行；
+- 检查 import 列表，确认真的是漏了 `parseExt`。
+
+**4. 错误原因分析**
+
+`<script setup>` 中未导入的标识符在模板里被当作 `_ctx.xxx` 去访问组件实例，实例上没有该属性，于是渲染函数直接抛异常。Vue 的渲染是整棵子树一起执行的，渲染函数抛错后整页渲染中断，表现出的现象是「所有绑定数据都消失」，很容易被误判成数据没加载到或接口 400。后续改为用 `computed` 包一层（`docExt`）避免在模板里直接调函数，同时补齐导入。
+
+---
+
+## Bug 9：提示条混进 `v-if` 链，校验失败时既不显示表格也不显示文本
+
+**1. 错误现象**
+
+往 `why.csv` 里粘一段不合法的 CSV，页面出现提示「无法以表格视图显示……当前按纯文本显示」，但提示下方并没有出现纯文本编辑器，整块渲染区是空的。
+
+**2. 错误描述**
+
+原本写成：
+
+```vue
+<div v-if="docView.view === 'table' && csvError" class="type-tip">...</div>
+<CsvTable v-if="docView.view === 'table' && !csvError" />
+<div v-else-if="docView.view === 'markdown' && mdMode === 'preview'" ...></div>
+<MonacoEditor v-else />
+```
+
+**3. 排错过程**
+
+- 现象是「提示条出来了，兜底编辑器没出来」，说明 `v-if / v-else-if / v-else` 这条链没有走到最后一项；
+- 对照 Vue 的编译规则：`v-else-if` / `v-else` 必须紧跟在持有 `v-if` 的那个元素之后，中间插入任何元素都会断链；
+- 检查发现 `CsvTable` 的 `v-if` 条件为假，但它是链头，链头为假后 `v-else / v-else-if` 应当生效才对——问题是提示条本身也带着 `v-if`，两个并列的 `v-if` 被编译器当成两条独立链，提示条的 `v-if` 把紧随其后的 `CsvTable` 抢成了自己的 `v-else` 分支；
+- 改为：提示条独立 `v-if`，渲染链的链头挪到 `CsvTable`，`v-if="showGrid"`（表格类型 + 内容合法 + 本端选的是表格视图），Markdown 与 Monaco 依次 `v-else-if` / `v-else`。
+
+**4. 错误原因分析**
+
+`v-if` 链是**位置敏感**的结构：编译器按「相邻兄弟元素」判断谁与谁成链，一个仅有 `v-if` 的提示元素插在链头前面时，会把后面的元素吸附成自己的分支，从而改变整条链的语义。修复原则是：**提示类元素永远不参与渲染链**，要么放到链外独立 `v-if`，要么包进外层容器。
+
+---
+
+## Bug 10：CSV 行分隔符误用 `/`，整段内容被当成一行
+
+**1. 错误现象**
+
+粘进 `why.csv` 的内容是 `姓名,年龄,城市 / 张三,20,北京 / 李四,22,上海`，表格视图把表头渲染成 `姓名`、`年龄`、`城市`、`/`、`张三`、`20`、`北京`、`/`、`李四`、`22`、`上海` 共 7 列，只有 1 行数据。
+
+**2. 错误描述**
+
+用户把 `/` 当成换行符号书写示例数据，而 CSV 的行分隔符是 `\n`（或 `\r\n`），`/` 只是一个普通字符。
+
+**3. 排错过程**
+
+- 看截图里的表头：`城市` 后面紧跟一个单独的 `/` 单元格，说明解析器把 `/` 当成了列；
+- 用 `papaparse` 单独解析该字符串，`data.length` 为 1，`data[0].length` 为 11，与页面表现一致；
+- 改用真实换行写入后，`data.length = 3`，列数 3，渲染正常。
+
+**4. 错误原因分析**
+
+不是代码缺陷，是输入格式错误。CSV 的解析规则只认 `,`（或 `\t`、`|`）作字段分隔、`\n` 作记录分隔，校验逻辑本身没错。此处也顺带验证了校验器的价值：若没有「每行分隔符数量必须与首行一致」这条规则，这种单行多列的内容会被静默当成一张 1 行 11 列的宽表。
+
+---
+
+## Bug 11：`DrawLayer` 漏挂进模板，按钮有、画布无
+
+**1. 错误现象**
+
+点「批注」按钮后按钮变橙色、提示「已进入批注模式」，但鼠标在文档上划动没有任何线条出现。
+
+**2. 错误描述**
+
+`Editor.vue` / `Share.vue` 的 `<template>` 里补了批注按钮与画笔控件，但漏掉了 `<DrawLayer>` 组件本身，`annotation.js` 的 `attach(socket)` 其实已经正常收到了服务端的 `boardState`、`strokes` 里也有数据。
+
+**3. 排错过程**
+
+- Vue Devtools 里查组件树，`DrawLayer` 不存在，确认是模板没挂；
+- 确认状态层无问题：`strokes` 数组长度随远端笔画增长，说明 socket 链路通了；
+- 补挂组件后发现仍不显示，原因是没有相对定位容器——`DrawLayer` 的 `.draw-layer` 是 `position: absolute; inset: 0`，父元素若是 `static` 就会相对最近定位祖先（通常是视口）铺满整页，表现为「线条画在莫名位置」；
+- 补 `<div class="editor-area">{ position: relative }</div>` 包裹渲染区后正常。
+
+**4. 错误原因分析**
+
+状态层（组合式函数）与视图层（组件、容器）是两套容易脱节的东西：逻辑写通了不等于看得见。绝对值定位的覆盖层必须同时满足两个条件——**组件被挂载** 和 **父级有定位上下文**，缺任意一个都不显示或错位。另一方面也说明批注按钮的 `v-if="docView.view !== 'table'"` 会让表格文档的批注入口整块消失，排查时先确认当前文档类型。
+
+---
+
+## Bug 12：分享页收到远端 op 时 `transform is not defined`
+
+**1. 错误现象**
+
+分享页本地有未确认操作（刚打完字、还没来得及收到 `opAck`）时，另一端也发来一次编辑，控制台报：
+
+```
+ReferenceError: transform is not defined
+```
+
+随后分享页内容停在旧值不再更新。
+
+**2. 错误描述**
+
+`Share.vue` 里只写了 `import { diffToOp, applyOp } from '../utils/ot'`，但 `remoteOp` 回调里对 `pendingOps` 逐条执行了 `transform(localOp, remoteOp)`。
+
+**3. 排错过程**
+
+- 报错堆栈指向 `remoteOp` 回调，确认函数体里确实调用了 `transform`；
+- 检查 import 行，`transform` 不在导入列表里；
+- 补齐导入后重测：两端并发输入，内容一致。
+
+**4. 错误原因分析**
+
+与 Bug 8 同源：`<script setup>` 的作用域是模块级，模板与事件回调里用到的任何外部函数都必须在导入列表中出现。此类问题的特点是**只在特定分支才触发**（本例只在「本地有未确认 op」且「同时收到远端 op」时才走到那行），静态检查和日常单端测试都发现不了，容易在演示现场才暴露。修复为 `import { diffToOp, applyOp, transform } from '../utils/ot'`。

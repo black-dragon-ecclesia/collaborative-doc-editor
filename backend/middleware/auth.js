@@ -1,6 +1,6 @@
 //JWT 鉴权中间件，后面文档、目录相关接口都要靠这个中间件校验登录状态。
 const jwt = require('jsonwebtoken')
-const JWT_SECRET = 'collab-doc-secret-2026-dev'
+const { JWT_SECRET } = require('../config/env')
 
 /**
  * JWT登录鉴权中间件

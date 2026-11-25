@@ -17,6 +17,20 @@
       >
         切换为{{ csvViewMode === 'grid' ? '文本' : '表格' }}视图
       </el-button>
+      <el-button
+        size="small"
+        :type="drawMode ? 'warning' : 'default'"
+        @click="toggle(docView.view)"
+      >
+        {{ drawMode ? '退出批注' : '批注' }}
+      </el-button>
+      <template v-if="drawMode">
+        <el-color-picker v-model="penColor" size="small" />
+        <el-input-number v-model="penWidth" :min="1" :max="8" size="small" style="width:90px" />
+        <el-button size="small" @click="undo">撤销我的上一笔</el-button>
+        <el-button size="small" type="danger" @click="clear">清空批注</el-button>
+      </template>
+
       <div class="online-list">
         <span>在线：</span>
         <span v-for="u in onlineUsers" :key="u.userId">{{ u.username }}</span>
@@ -34,26 +48,49 @@
       </el-radio-group>
     </div>
     
-    <!-- 表格类型但内容不合法：独立提示条，不参与下面的渲染链 -->
-    <div v-if="docView.view === 'table' && csvError" class="type-tip">
-      无法以表格视图显示：{{ csvError }}。当前按纯文本显示。
+        <!-- 有人在批注时的提示条 -->
+    <div v-if="annotators.length" class="annotator-tip">
+      {{ annotators.join('、') }} 正在批注
     </div>
 
-    <!-- 链的起点：表格且校验通过才挂网格 -->
-    <CsvTable
-      v-if="showGrid"
-      v-model="docContent"
-    />
+    <!-- 渲染区统一包一层相对定位容器，画布绝对定位盖在上面 -->
+    <div class="editor-area">
+      <!-- 表格类型但内容不合法：独立提示条，不参与下面的渲染链 -->
+      <div v-if="docView.view === 'table' && csvError" class="type-tip">
+        无法以表格视图显示：{{ csvError }}。当前按纯文本显示。
+      </div>
 
-    <!-- Markdown 预览态 -->
-    <div
-      v-else-if="docView.view === 'markdown' && mdMode === 'preview'"
-      class="md-preview"
-      v-html="mdHtml"
-    ></div>
+      <!-- 链的起点：表格且校验通过才挂网格 -->
+      <CsvTable
+        v-else-if="showGrid"
+        v-model="docContent"
+        :read-only="drawMode || lockedByAnnotate"
+      />
 
-    <!-- 兜底：普通文本、代码、以及"表格但校验不通过"都走 Monaco -->
-    <MonacoEditor v-else v-model="docContent" :language="docView.language" />
+      <!-- Markdown 预览态 -->
+      <div
+        v-else-if="docView.view === 'markdown' && mdMode === 'preview'"
+        class="md-preview"
+        v-html="mdHtml"
+      ></div>
+
+      <!-- 兜底：普通文本、代码、以及"表格但校验不通过"都走 Monaco -->
+      <MonacoEditor
+        v-else
+        v-model="docContent"
+        :language="docView.language"
+        :read-only="drawMode || lockedByAnnotate"
+      />
+
+      <!-- 批注图层：表格视图不显示 -->
+      <DrawLayer
+        :active="drawMode"
+        :strokes="strokes"
+        :color="penColor"
+        :width="penWidth"
+        @stroke="onStroke"
+      />
+    </div>
 
 
   </div>
@@ -131,8 +168,11 @@ import { marked } from 'marked'
 // 表格组件
 import CsvTable from '../components/CsvTable.vue'
 import { validateCsv } from '../utils/csv'
-
-
+// 批注相关工具
+import { useAnnotation } from '../utils/annotation'
+import DrawLayer from '../components/DrawLayer.vue'
+// 文本内容净化工具
+import DOMPurify from 'dompurify'
 
 
 const userStore = useUserStore()
@@ -173,6 +213,18 @@ const snapshotList = ref([])          // 版本列表
 const showSnapshotPreview = ref(false) // 预览弹窗
 const previewContent = ref('')        // 预览内容
 
+// 批注协同：socket、身份、文档 id 都由外部提供，内部统一管理状态
+const annotation = useAnnotation({
+  getSocket: () => socket,                       // 拿到当前 socket 实例
+  getDocId: () => route.params.docId,            // 当前文档 id
+  getIdentity: () => ({                         // 所有者用登录态身份
+    userId: userStore.userId,
+    username: userStore.username || '访客'
+  }),
+  defaultColor: '#f56c6c'                        // 所有者红色
+})
+// 解构出模板要用的字段
+const { drawMode, strokes, annotators, penColor, penWidth, lockedByAnnotate, toggle, onStroke, undo, clear } = annotation
 
 
 
@@ -214,8 +266,12 @@ async function loadDoc(id) {
   // socket 只在首次进入时创建一次，避免重复连接与重复注册监听
   if (!socket) {
       // 建立与后端 8888 端口的 socket 连接
-      socket = io('http://127.0.0.1:8888')
-
+      // 认证时携带 JWT 令牌
+      const host = window.location.hostname
+      socket = io(`http://${host}:8888`,{ auth: { token: localStorage.getItem('token') } })
+      
+      // 绑定批注相关的服务端事件
+      annotation.attach(socket)
       // 监听远端编辑内容：另一端输入的全文会推到这里
       socket.on('remoteOp', (op) => {
           console.log("收到远端操作:", op)
@@ -252,6 +308,29 @@ async function loadDoc(id) {
           // 根据 opId 从 pendingOps 中移除对应操作
           pendingOps = pendingOps.filter(op => op.opId !== data.opId)
       })
+      // 入房时服务端下发的房间实时全文，覆盖 HTTP 拉到的旧内容
+      socket.on('docState', (text) => {
+          if (typeof text !== 'string') return
+          if (text === docContent.value) { lastText = text; return }
+          isRemoteChange = true
+          docContent.value = text
+          lastText = text
+          setTimeout(() => { isRemoteChange = false }, 0)
+      })
+
+      socket.on('docPermission', ({ canEdit }) => {
+        if (!canEdit) ElMessage.error('登录状态已失效或无编辑权限，请重新登录')
+      })
+      // 监听操作被拒绝事件：收到后从 pendingOps 中移除对应操作
+      let rejectedTipShown = false
+      socket.on('opRejected', ({ opId }) => {
+        pendingOps = pendingOps.filter(op => op.opId !== opId)
+        if (rejectedTipShown) return
+        rejectedTipShown = true
+        ElMessage.warning('当前没有编辑权限，修改未同步')
+      })
+
+
   }
 
   // 进入新文档前先退出上一个房间，离开旧房间时会触发后端广播新在线列表
@@ -390,7 +469,8 @@ const mdMode = ref('edit')
 // Markdown 预览的渲染结果
 const mdHtml = computed(() => {
   if (docView.value.view !== 'markdown') return ''
-  return marked.parse(docContent.value || '')
+  // 清染 Markdown 内容前，先净化，防止 XSS 攻击
+  return DOMPurify.sanitize(marked.parse(docContent.value || ''))
 })
 
 // 表格类型的内容校验：不通过就不挂网格，退回纯文本并提示原因
@@ -550,6 +630,17 @@ onUnmounted(() => {
   margin-bottom: 8px;
   font-size: 12px;
   color: #e6a23c;
+}
+/* 渲染区容器：给画布提供定位基准 */
+.editor-area {
+  position: relative;
+}
+
+/* 批注提示条 */
+.annotator-tip {
+  color: #e6a23c;
+  font-size: 13px;
+  margin-bottom: 8px;
 }
 
 </style>

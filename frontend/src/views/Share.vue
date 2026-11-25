@@ -16,6 +16,20 @@
           {{ permission === 2 ? '可编辑' : '只读' }}
         </el-tag>
 
+        <el-button
+          size="small"
+          :type="drawMode ? 'warning' : 'default'"
+          @click="toggle(docView.view)"
+        >
+          {{ drawMode ? '退出批注' : '批注' }}
+        </el-button>
+        <template v-if="drawMode">
+          <el-color-picker v-model="penColor" size="small" />
+          <el-input-number v-model="penWidth" :min="1" :max="8" size="small" style="width:90px" />
+          <el-button size="small" @click="undo">撤销我的上一笔</el-button>
+          <el-button size="small" type="danger" @click="clear">清空批注</el-button>
+        </template>
+
         <!-- 当前视图类型，由文件名后缀决定 -->
         <el-tag type="info" size="small">{{ docView.label }}</el-tag>
 
@@ -44,29 +58,46 @@
         <span v-for="u in onlineUsers" :key="u.userId">{{ u.username }}</span>
       </div>
 
-      <div v-if="docView.view === 'table' && csvError" class="type-tip">
-        无法以表格视图显示：{{ csvError }}。当前按纯文本显示。
+            <!-- 有人在批注时的提示条 -->
+      <div v-if="annotators.length" class="annotator-tip">
+        {{ annotators.join('、') }} 正在批注
       </div>
 
-      <CsvTable
-        v-if="docView.view === 'table' && !csvError"
-        v-model="content"
-        :read-only="permission !== 2"
-      />
+      <!-- 渲染区统一包一层相对定位容器，画布绝对定位盖在上面 -->
+      <div class="share-area">
+        <div v-if="docView.view === 'table' && csvError" class="type-tip">
+          无法以表格视图显示：{{ csvError }}。当前按纯文本显示。
+        </div>
 
-      <div
-        v-else-if="docView.view === 'markdown' && mdMode === 'preview'"
-        class="md-preview"
-        v-html="mdHtml"
-      ></div>
+        <CsvTable
+          v-else-if="docView.view === 'table'"
+          v-model="content"
+          :read-only="permission !== 2"
+        />
 
-      <MonacoEditor
-        v-else
-        v-model="content"
-        :language="docView.language"
-        :read-only="permission !== 2"
-      />
+        <div
+          v-else-if="docView.view === 'markdown' && mdMode === 'preview'"
+          class="md-preview"
+          v-html="mdHtml"
+        ></div>
 
+        <!-- 只读权限 / 本端在批注 / 别人在批注，三种情况都锁正文编辑 -->
+        <MonacoEditor
+          v-else
+          v-model="content"
+          :language="docView.language"
+          :read-only="permission !== 2 || drawMode || lockedByAnnotate"
+        />
+
+        <!-- 批注图层：表格视图不显示 -->
+        <DrawLayer
+          :active="drawMode"
+          :strokes="strokes"
+          :color="penColor"
+          :width="penWidth"
+          @stroke="onStroke"
+        />
+      </div>
     
     </div>
 
@@ -101,12 +132,16 @@ import MonacoEditor from '../components/MonacoEditor.vue'
 import { io } from 'socket.io-client'
 // 需要与 Editor.vue 使用同一套差分协议，否则两端收发不匹配
 import { diffToOp, applyOp,transform } from '../utils/ot'
-import { resolveDocView ,parseExt} from '../utils/docType'
+import { resolveDocView } from '../utils/docType'
 import { marked } from 'marked'
 //import { computed } from 'vue'
 import CsvTable from '../components/CsvTable.vue'
 import { validateCsv } from '../utils/csv'
-
+// 批注相关工具
+import DrawLayer from '../components/DrawLayer.vue'
+import { useAnnotation } from '../utils/annotation'
+// 文本内容净化工具
+import DOMPurify from 'dompurify'
 
 
 const route = useRoute()
@@ -139,6 +174,8 @@ let pendingOps = []
 // 本地操作自增序号，给每条操作一个唯一标识
 let opSeq = 0
 
+// 操作被拒绝提示条是否已显示
+let rejectedTipShown = false
 
 // 当前是否为未登录访客，控制改名按钮显示
 const isGuest = computed(() => !localStorage.getItem('userId'))
@@ -157,7 +194,8 @@ const mdMode = ref('edit')
 // Markdown 渲染结果
 const mdHtml = computed(() => {
   if (docView.value.view !== 'markdown') return ''
-  return marked.parse(content.value || '')
+  // 清染 Markdown 内容前，先净化，防止 XSS 攻击
+  return DOMPurify.sanitize(marked.parse(content.value || ''))
 })
 
 const csvCheck = computed(() => {
@@ -166,6 +204,14 @@ const csvCheck = computed(() => {
 })
 const csvError = computed(() => (csvCheck.value.ok ? '' : csvCheck.value.error))
 
+// 批注协同：访客身份必须来自 getGuestInfo，撤销才能对上自己那笔
+const annotation = useAnnotation({
+  getSocket: () => socket,
+  getDocId: () => currentDocId,
+  getIdentity: () => getGuestInfo(),
+  defaultColor: '#409eff'   // 访客蓝色，与所有者区分
+})
+const { drawMode, strokes, annotators, penColor, penWidth, lockedByAnnotate, toggle, onStroke, undo, clear } = annotation
 
 
 // 通过分享码拉取文档基础信息与权限
@@ -250,8 +296,12 @@ function getGuestInfo() {
 // 建立 socket 连接，加入文档房间，与所有者处于同一房间才能实时同步
 function initSocket() {
   if (socket) return
-  socket = io('http://127.0.0.1:8888')
+  // 认证时携带分享码
+  const host = window.location.hostname
+  socket = io(`http://${host}:8888`,{ auth: { shareCode: route.params.code } })
 
+    // 绑定批注相关的服务端事件
+  annotation.attach(socket)
   // 远端内容推送：只读访客也接收，靠标记阻止回广播
   socket.on('remoteOp', (op) => {
     isRemoteChange = true
@@ -280,6 +330,24 @@ function initSocket() {
     // 从本地缓存中移除已确认的操作
     pendingOps = pendingOps.filter(op => op.opId !== opId)
   })
+
+    // 入房时下发的房间实时全文，覆盖 HTTP 拉到的旧内容
+  socket.on('docState', (text) => {
+    if (typeof text !== 'string') return
+    if (text === content.value) { lastText = text; return }
+    isRemoteChange = true
+    content.value = text
+    lastText = text
+    setTimeout(() => { isRemoteChange = false }, 0)
+  })
+
+  socket.on('opRejected', ({ opId }) => {
+    pendingOps = pendingOps.filter(op => op.opId !== opId)
+    if (rejectedTipShown) return
+    rejectedTipShown = true
+    ElMessage.warning('当前没有编辑权限，修改未同步')
+  })
+
 
   socket.emit('joinDoc', { docId: currentDocId, ...getGuestInfo() })
 }
@@ -330,6 +398,7 @@ async function handleSave() {
 
 // 主动退出：先退出房间让其他人立即看到下线，再断开连接并跳回首页
 function handleExit() {
+  annotation.detach()
   if (socket) {
     if (currentDocId) socket.emit('leaveDoc', currentDocId)
     socket.off('remoteOp')
@@ -421,6 +490,17 @@ loadShareDoc()
   margin-bottom: 8px;
   font-size: 12px;
   color: #e6a23c;
+}
+/* 渲染区容器：给画布提供定位基准 */
+.share-area {
+  position: relative;
+}
+
+/* 批注提示条 */
+.annotator-tip {
+  color: #e6a23c;
+  font-size: 13px;
+  margin-bottom: 8px;
 }
 
 </style>

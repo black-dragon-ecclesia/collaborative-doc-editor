@@ -25,3 +25,8 @@ Thumbs.db
 
 # sql临时备份
 *.sql.tmp
+
+# 本地工作目录与文档产物
+_work/
+*.docx
+
