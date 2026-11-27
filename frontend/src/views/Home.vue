@@ -39,8 +39,57 @@
           </template>
         </el-tree>
       </div>
-      <div class="content">
-        <h3>请在左侧点击文档进入编辑</h3>
+        <div class="content">
+        <!-- 欢迎区 -->
+        <div class="hero">
+          <h2>在线协同文档编辑器</h2>
+          <p>多人实时协同 · 差分操作 + OT 冲突合并 · 分享与版本回溯</p>
+          <div class="hero-meta">
+            <span>文档 {{ docCount }} 篇</span>
+            <span>文件夹 {{ folderCount }} 个</span>
+            <span>支持 .txt / .md / 代码 / .csv</span>
+          </div>
+        </div>
+
+        <!-- 功能卡片 -->
+        <div class="card-grid">
+          <div class="card" v-for="item in features" :key="item.title">
+            <span class="card-tag" :style="{ background: item.color }">{{ item.tag }}</span>
+            <div class="card-title">{{ item.title }}</div>
+            <div class="card-desc">{{ item.desc }}</div>
+          </div>
+        </div>
+
+        <!-- 快速上手 -->
+        <div class="guide">
+          <h3>快速上手</h3>
+          <ol>
+            <li>
+              <b>新建文档</b>：点左侧「新建文档」，<u>文件名后缀决定视图</u>——<code>.md</code> 带预览、
+              <code>.csv</code> 变表格、<code>.js</code> 等代码后缀自动高亮，无后缀就是纯文本。
+            </li>
+            <li>
+              <b>进入编辑</b>：左侧点文档名进入编辑器，输入停止 1.2 秒后自动保存，刷新页面可恢复草稿。
+            </li>
+            <li>
+              <b>邀请协作</b>：编辑器里点「分享」，选只读/可编辑并设有效期，把链接发给对方，
+              双方打开同一页面即可实时同步，右侧上方能看到在线成员。
+            </li>
+            <li>
+              <b>批注讨论</b>：点「批注」进入画布模式，正文暂时锁定，多人在同一页面上圈画，
+              撤销只撤自己那一笔，清空对全房间生效。
+            </li>
+            <li>
+              <b>留个版本</b>：改动较大的段落前点「保存快照」，之后在「历史版本」里预览并一键回滚。
+            </li>
+          </ol>
+        </div>
+
+        <!-- 底部小提示 -->
+        <div class="tip-row">
+          <span>表格视图会校验分隔符数量与引号闭合，不通过时只提示行号，不改动内容</span>
+          <span>编辑统计按天聚合插入与删除次数</span>
+        </div>
       </div>
     </div>
 
@@ -117,6 +166,20 @@ const docForm = ref({ name: '', folderId: 0 })
 // 新建文档-文件夹下拉选项
 const folderOptions = ref([])
 
+const docCount = ref(0)
+const folderCount = ref(0)
+
+// 首页功能卡片
+const features = [
+  { tag: '协同', title: '实时协同编辑', desc: 'Socket.io 房间 + 差分操作，多端输入不互相覆盖', color: '#409eff' },
+  { tag: '分享', title: '文档分享', desc: '只读 / 可编辑两种权限，可设过期时间，无需注册即可打开', color: '#67c23a' },
+  { tag: '视图', title: '按后缀切换视图', desc: '纯文本、Markdown、代码高亮、CSV 表格自动识别', color: '#909399' },
+  { tag: '批注', title: '共享批注画布', desc: '多人实时共享笔画，批注时锁定正文并提示他人', color: '#e6a23c' },
+  { tag: '快照', title: '版本快照', desc: '随时存档与回滚，回滚同样走协同广播', color: '#8e44ad' },
+  { tag: '统计', title: '编辑统计', desc: '折线 / 柱状 / 饼图查看编辑趋势与文档热度', color: '#2c9e87' }
+]
+
+
 // 获取全部数据：文件夹 + 文档
 async function loadAllData() {
   const [folderRes, docRes] = await Promise.all([
@@ -127,6 +190,10 @@ async function loadAllData() {
   const docList = docRes.code === 200 ? docRes.data : []
 
   treeData.value = buildTree(folderList, docList)
+
+  docCount.value = docList.length
+  folderCount.value = folderList.length
+
 
   // =====新增：组装下拉选项=====
   folderOptions.value = [
@@ -358,5 +425,124 @@ onMounted(() => {
   display: flex;
   gap: 8px;
 }
+/* 欢迎区 */
+.hero {
+  margin-bottom: 24px;
+  padding: 20px 24px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f2f6ff 0%, #ffffff 70%);
+  border: 1px solid #e8eefc;
+}
+.hero h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: #1f2d3d;
+}
+.hero p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #7a8ba0;
+}
+.hero-meta {
+  display: flex;
+  gap: 20px;
+  font-size: 12px;
+  color: #909399;
+}
+.hero-meta span {
+  padding-left: 8px;
+  border-left: 2px solid #dcdfe6;
+}
+.hero-meta span:first-child {
+  border-left: none;
+  padding-left: 0;
+}
+
+/* 功能卡片 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.card {
+  padding: 14px 16px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fff;
+  transition: box-shadow .2s, transform .2s;
+}
+.card:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .06);
+  transform: translateY(-1px);
+}
+.card-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #fff;
+  margin-bottom: 8px;
+}
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 6px;
+}
+.card-desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #909399;
+}
+
+/* 快速上手 */
+.guide {
+  padding: 16px 20px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fafbfc;
+  margin-bottom: 12px;
+}
+.guide h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: #303133;
+}
+.guide ol {
+  margin: 0;
+  padding-left: 20px;
+}
+.guide li {
+  font-size: 13px;
+  line-height: 1.9;
+  color: #606266;
+}
+.guide li b {
+  color: #303133;
+}
+.guide code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #f0f2f5;
+  font-size: 12px;
+  color: #c7254e;
+}
+
+/* 底部提示 */
+.tip-row {
+  display: flex;
+  gap: 24px;
+  font-size: 12px;
+  color: #a8abb2;
+}
+
+/* 窄屏兜底：卡片两列 */
+@media (max-width: 1200px) {
+  .card-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 </style>
 
