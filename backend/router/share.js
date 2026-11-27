@@ -9,5 +9,8 @@ router.post('/create', authMiddleware, shareCtrl.createShare)
 router.put('/save', shareCtrl.saveShareDoc)
 // 访客读取文档：公开接口，放在最后避免吞掉 /create、/save
 router.get('/:code', shareCtrl.getShareDoc)
+// 列出某文档已有的分享链接，必须登录，只能查自己名下的文档
+router.get('/list/:docId', authMiddleware, shareCtrl.listShares)
+
 
 module.exports = router

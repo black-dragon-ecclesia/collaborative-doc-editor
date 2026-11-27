@@ -108,3 +108,38 @@ exports.saveShareDoc = async (req, res) => {
         return res.json({ code: 500, msg: '保存失败' })
     }
 }
+// 列出某文档已创建的分享链接，只有文档所有者能查
+exports.listShares = async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { docId } = req.params
+        if (!docId) return res.json({ code: 400, msg: '文档id不能为空' })
+
+        // 校验归属，避免查到别人文档的分享码
+        const [docs] = await pool.query(
+            'SELECT id FROM document WHERE id = ? AND user_id = ? AND status = 1',
+            [docId, userId]
+        )
+        if (docs.length === 0) return res.json({ code: 400, msg: '文档不存在或无权限' })
+
+        // 新生成的排前面，方便一眼看到最近在用哪条
+        const [rows] = await pool.query(
+            'SELECT id, share_code, permission, expire_time FROM doc_share WHERE doc_id = ? ORDER BY id DESC',
+            [docId]
+        )
+
+        const now = Date.now()
+        const data = rows.map(r => ({
+            id: r.id,
+            shareCode: r.share_code,
+            permission: Number(r.permission),
+            expireTime: r.expire_time,
+            // 没有过期时间视为永久有效
+            expired: r.expire_time ? new Date(r.expire_time).getTime() < now : false
+        }))
+        return res.json({ code: 200, data })
+    } catch (err) {
+        console.error(err)
+        return res.json({ code: 500, msg: '获取分享列表失败' })
+    }
+}

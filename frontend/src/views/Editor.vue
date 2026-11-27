@@ -94,9 +94,9 @@
 
 
   </div>
-  <!-- 分享弹窗：选权限、填有效期、生成链接 -->
-  <el-dialog v-model="showShare" title="分享文档" width="520px">
-    <el-form label-width="90px">
+    <!-- 分享弹窗：生成新链接 + 展示该文档已有的分享链接 -->
+  <el-dialog v-model="showShare" title="分享文档" width="720px">
+    <el-form label-width="90px" inline>
       <el-form-item label="访问权限">
         <el-radio-group v-model="shareForm.permission">
           <el-radio :value="1">只读</el-radio>
@@ -104,23 +104,64 @@
         </el-radio-group>
       </el-form-item>
       <el-form-item label="有效期">
-        <!-- 0 表示永不过期 -->
         <el-input-number v-model="shareForm.expireDays" :min="0" :max="365" />
         <span style="margin-left:8px;color:#999">天，0 表示永久</span>
       </el-form-item>
     </el-form>
 
-    <!-- 生成后的完整访问地址 -->
+    <!-- 本次刚生成的地址 -->
     <div v-if="shareLink" class="share-link">
       <el-input v-model="shareLink" readonly />
-      <el-button type="primary" size="small" @click="copyShareLink">复制</el-button>
+      <el-button type="primary" size="small" @click="copyText(shareLink)">复制</el-button>
     </div>
+
+    <!-- 已有链接列表 -->
+    <div class="share-list-head">
+      <span>已有分享链接（{{ shareList.length }} 条）</span>
+      <el-button link size="small" @click="loadShares">刷新</el-button>
+    </div>
+    <el-table :data="shareList" size="small" height="260" empty-text="暂无分享链接">
+      <el-table-column label="权限" width="90">
+        <template #default="{ row }">
+          <el-tag :type="row.permission === 2 ? 'success' : 'info'" size="small">
+            {{ row.permission === 2 ? '可编辑' : '只读' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="有效期" width="170">
+        <template #default="{ row }">
+          {{ row.expireTime ? formatTime(row.expireTime) : '永久' }}
+        </template>
+      </el-table-column>
+      <el-table-column label="状态" width="80">
+        <template #default="{ row }">
+          <el-tag :type="row.expired ? 'danger' : 'primary'" size="small">
+            {{ row.expired ? '已过期' : '有效' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="分享码" min-width="160">
+        <template #default="{ row }">
+          <span class="share-code">{{ row.shareCode.slice(0, 12) }}…</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="90">
+        <template #default="{ row }">
+          <el-button
+            link type="primary" size="small"
+            :disabled="row.expired"
+            @click="copyText(buildShareUrl(row.shareCode))"
+          >复制</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
 
     <template #footer>
       <el-button @click="showShare = false">关闭</el-button>
       <el-button type="primary" @click="createShareLink">生成链接</el-button>
     </template>
   </el-dialog>
+
     <!-- 保存快照弹窗 -->
   <el-dialog v-model="showSnapshotSave" title="保存版本快照" width="420px">
       <el-input v-model="snapshotRemark" placeholder="版本备注，例如：完成第一章" />
@@ -204,6 +245,8 @@ let opSeq = 0
 const showShare = ref(false)           // 分享弹窗开关
 const shareForm = ref({ permission: 2, expireDays: 7 }) // 1 只读 2 可编辑
 const shareLink = ref('')              // 生成出来的完整地址
+const shareList = ref([])               // 该文档已有的分享链接
+
 
 // ===== 版本快照相关状态 =====
 const showSnapshotSave = ref(false)   // 保存快照弹窗
@@ -318,6 +361,7 @@ async function loadDoc(id) {
           setTimeout(() => { isRemoteChange = false }, 0)
       })
 
+      // 监听文档权限变化：收到后更新本地状态
       socket.on('docPermission', ({ canEdit }) => {
         if (!canEdit) ElMessage.error('登录状态已失效或无编辑权限，请重新登录')
       })
@@ -369,13 +413,38 @@ async function handleSave() {
   }
 }
 
-// 打开分享弹窗，清空上次生成的链接
+// 拼出访客可直接打开的完整地址
+function buildShareUrl(code) {
+  return `${window.location.origin}/share/${code}`
+}
+
+// 时间格式化到分钟，mysql2 返回的是 Date，序列化后是 ISO 字符串
+function formatTime(t) {
+  const d = new Date(t)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+// 拉取该文档已有的分享链接
+async function loadShares() {
+  const res = await request.get(`/share/list/${route.params.docId}`)
+  if (res.code === 200) {
+    shareList.value = res.data
+  } else {
+    ElMessage.error(res.msg)
+  }
+}
+
+// 打开分享弹窗：清空上次结果，同时把已有链接拉一遍
 function openShare() {
   shareLink.value = ''
+  loadShares()
   showShare.value = true
 }
 
-// 生成分享链接：调后端 share/create，拼成访客可直接打开的地址
+
+// 生成分享链接
+// 1 只读 2 可编辑
 async function createShareLink() {
   const res = await request.post('/share/create', {
     docId: route.params.docId,
@@ -383,22 +452,35 @@ async function createShareLink() {
     expireDays: shareForm.value.expireDays
   })
   if (res.code === 200) {
-    shareLink.value = `${window.location.origin}/share/${res.data.shareCode}`
+    shareLink.value = buildShareUrl(res.data.shareCode)
     ElMessage.success('分享链接生成成功')
+    loadShares()   // 新生成的立刻出现在列表里
   } else {
     ElMessage.error(res.msg)
   }
 }
 
-// 复制链接到剪贴板
-async function copyShareLink() {
+// 复制文本：手机用 http://192.168.x.x 访问时 navigator.clipboard 不可用，走 textarea 兜底
+async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(shareLink.value)
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
     ElMessage.success('已复制到剪贴板')
   } catch (e) {
     ElMessage.warning('复制失败，请手动选中复制')
   }
 }
+
 
 // 打开保存快照弹窗，清空备注
 function openSnapshotSave() {
@@ -641,6 +723,21 @@ onUnmounted(() => {
   color: #e6a23c;
   font-size: 13px;
   margin-bottom: 8px;
+}
+/* 已有链接区标题行 */
+.share-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 16px 0 8px;
+  font-size: 13px;
+  color: #606266;
+}
+/* 分享码等宽字体，避免 I/l 混淆 */
+.share-code {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: #909399;
 }
 
 </style>
