@@ -13,6 +13,9 @@ const { Server } = require("socket.io")
 const jwt = require('jsonwebtoken')
 // 必须与 middleware/auth.js 里的 JWT_SECRET 保持一致
 //const { JWT_SECRET } = require('./config/env')
+// 路径模块
+const path = require('path')
+
 
 
 const app = express()
@@ -50,6 +53,18 @@ app.use('/api/share', shareRouter) //分享相关接口
 app.use('/api/snapshot', authMiddleware, snapshotRouter) //快照相关接口
 app.use('/api/stats', authMiddleware, statsRouter) //统计汇总相关接口
 
+// ===== 生产部署：托管前端构建产物 =====
+// 静态文件服务，处理 /api 以下的请求 ，返回前端构建产物
+app.use(express.static(path.join(__dirname, '../frontend/dist')))
+
+// 非 /api 的 GET 请求统一回落 index.html，交给前端路由处理
+app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api')) return next()
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'))
+})
+
+
+
 const server = app.listen(PORT, () => {
     console.log('服务启动在 8888')
 })
@@ -58,7 +73,8 @@ const server = app.listen(PORT, () => {
 const io = new Server(server, {
     cors: {
         // origin 填写前端页面完整访问地址
-        origin: ["http://127.0.0.1:8000", "http://127.0.0.1:5173", "http://localhost:8000", "http://localhost:5173"],
+        //origin: ["http://127.0.0.1:8000", "http://127.0.0.1:5173", "http://localhost:8000", "http://localhost:5173"],
+        origin: true,
         methods: ["GET", "POST"]
     }
 })
