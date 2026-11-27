@@ -158,6 +158,159 @@ npm run dev        # Vite，端口 8000
 
 浏览器访问 `http://localhost:8000`。
 
+## 部署
+
+### 前置说明（几条与当前代码强绑定的约束）
+
+- **端口**：后端 REST 与 WebSocket 共用 `8888`（同一个 `app.listen` 创建的 server 实例）；前端开发端口 `8000`，生产环境只交付静态产物，不再占 8000。
+- **前端地址是硬编码的**：`utils/request.js` 的 `baseURL` 是 `` `http://${window.location.hostname}:8888/api` ``，`Editor.vue` / `Share.vue` 的 `io()` 也连 `${hostname}:8888`。因此**前端与后端必须同主机名，且浏览器能直连 8888**；若要走 80/443 反代，需按「4. 反向代理」同时改前端这两处。
+- **Socket.io 的 CORS 是白名单**：`app.js` 里只放了 `127.0.0.1` / `localhost` 的 `8000`、`5173`。REST 侧 `app.use(cors())` 是全放开的，但 **WS 握手会按白名单校验**，上线必须加生产域名，否则页面能打开、协同一片空白。
+- **JWT 密钥有两份**：`config/env.js` 从 `.env` 读 `JWT_SECRET`，`middleware/auth.js` 与 `app.js` 用它验签；而 `controller/user.js` 里还留着一份硬编码的开发密钥在签发 token。**部署前必须让两处一致**，否则登录成功、之后所有接口 401。
+- **只能单实例**：`roomUsers`、`roomState`、`roomBoards`、`roomAnnotators` 全是进程内存，`pm2 -i max` 或多副本会让协作者落到不同进程、互相看不见。
+- **配置入口**：连接参数统一走 `backend/.env`（`config/env.js` 加载并校验必填项），`db/config.js` 只用这些参数建连接池，不再硬编码。`npm run dev` 与 `npm start` 加载的是同一份配置。
+
+### 1. 环境准备
+
+| 项 | 要求 |
+|---|---|
+| Node.js | 18+（Express 5 的下限），建议 20 LTS |
+| MySQL | 8.x，库名 `collab_doc_db`，字符集 `utf8mb4` |
+| 反向代理 | 可选，Nginx 1.18+ |
+
+建库建表直接执行上文「数据库」章节的 SQL（六张表：`user`、`folder`、`document`、`doc_share`、`doc_snapshot`、`doc_edit_log`）。
+
+### 2. 后端
+
+```bash
+cd backend
+npm install --omit=dev
+
+# 生成配置文件；已存在 .env 就跳过这步
+cp .env.example .env
+```
+
+`.env` 字段：
+
+| 变量 | 说明 |
+|---|---|
+| `PORT` | 监听端口，默认 8888 |
+| `JWT_SECRET` | 签名密钥，生产必须换成随机长串（`openssl rand -hex 32`） |
+| `DB_HOST` / `DB_PORT` | 数据库地址与端口 |
+| `DB_USER` / `DB_PASSWORD` | 数据库账号 |
+| `DB_NAME` | 库名，默认 `collab_doc_db` |
+
+启动并自检：
+
+```bash
+npm start
+curl http://127.0.0.1:8888/api/ping   # code 200 = 服务与数据库都通了
+```
+
+常驻运行用 pm2（**不要开 cluster**，原因见前置说明）：
+
+```bash
+npm i -g pm2
+pm2 start app.js --name collab-backend
+pm2 save && pm2 startup
+```
+
+### 3. 前端
+
+```bash
+cd frontend
+npm install
+npm run build      # 产物：frontend/dist
+```
+
+`dist` 是纯静态文件，交给 Nginx 托管即可。
+
+### 4. 反向代理（可选）
+
+**方案 A：不改代码，直接暴露 8888**
+
+Nginx 只托管静态产物，API 与 WebSocket 由浏览器直连 `http://<host>:8888`。需要防火墙/安全组放行 8888，且页面必须与后端同主机名（代码里取的是 `window.location.hostname`）。简单，但不适合对外网正式发布。
+
+**方案 B：同域反代（推荐，收敛到 443 单端口）**
+
+先改前端两处地址，否则请求仍会打到 `:8888`：
+
+1. `frontend/src/utils/request.js`：`baseURL` 改为 `'/api'`
+2. `frontend/src/views/Editor.vue`、`frontend/src/views/Share.vue`：`io(\`http://${host}:8888\`, {...})` 改为 `io({ ... })` 不传地址（同源），或显式写成 `'/'`
+
+Nginx 配置：
+
+```nginx
+server {
+    listen 80;
+    server_name doc.example.com;
+    root /var/www/collab-doc/dist;
+    index index.html;
+
+    # history 路由必须回退，否则刷新 /editor/1、/stats 会 404
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # WebSocket 升级
+    location /socket.io/ {
+        proxy_pass http://127.0.0.1:8888;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+同时把生产域名加进 `backend/app.js` 的 Socket.io `cors.origin` 白名单。
+
+### 5. 上线验证清单
+
+1. `GET /api/ping` 返回 `code: 200`
+2. 注册 → 登录 → 首页能出目录树（走通说明 JWT 两处密钥一致）
+3. 两个窗口（一个正常 + 一个隐身）开同一文档，A 输入时 B 实时出现，B 的在线列表能看到 A（说明 WS 与 `sendOp` 通）
+4. 分享链接在未登录窗口能打开；只读账号看不到保存按钮、输入框被禁
+5. 保存快照 → 历史版本 → 预览 → 回滚，回滚后另一端内容同步变化
+6. `/stats` 能出折线 / 柱状 / 饼图（说明 `doc_edit_log` 在写）
+7. 点「批注」两端同时出现笔画与「正在批注」提示
+
+### 6. 常见故障
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 启动即报「缺少环境变量」 | `.env` 不存在或必填项为空 | 按 `.env.example` 补齐 `JWT_SECRET`、`DB_*` |
+| 登录成功，之后接口全 401 | `controller/user.js` 的硬编码密钥与 `.env` 的 `JWT_SECRET` 不一致 | 两处统一为同一个值 |
+| 页面能开，协同完全不动 | Socket.io `cors.origin` 不含当前域名，或 8888 不可达 | 加白名单、放行端口 |
+| 刷新 `/editor/1`、`/stats` 变 404 | history 路由未回退 | `try_files $uri $uri/ /index.html` |
+| 分享页一直「加载中」 | 分享码过期，或文档已逻辑删除（`status=0`） | 重新生成分享，或查 `doc_share.expire_time` |
+| 协作者看不全彼此 | 起了多实例 | 只跑单进程 |
+| 服务重启后在线名单、批注清空 | 内存态设计（见「已知限制」5、7） | 预期行为；要持久化得换 Redis / 落库 |
+
+### 7. Windows 本机跑起来
+
+```powershell
+cd D:\app\program\collaborative-doc-editor\backend
+# .env 已存在就跳过
+copy .env.example .env
+npm install
+npm start
+
+# 另开一个 PowerShell 窗口
+cd D:\app\program\collaborative-doc-editor\frontend
+npm install
+npm run dev
+```
+
+然后访问 `http://localhost:8000`。
+
 ## 接口一览
 
 除 `/api/user/*` 与 `GET /api/share/:code` 外，均需请求头 `Authorization: Bearer <token>`。
